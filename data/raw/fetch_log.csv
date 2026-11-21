@@ -1,0 +1,2 @@
+gauge,fetched_at_utc,forecast_issued_utc,file
+TODA1,2026-11-21T20:44:40Z,2026-11-21T13:25:00Z,data/raw/TODA1/2026-11-21T13-25-00Z.json.gz
