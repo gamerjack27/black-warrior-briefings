@@ -1,0 +1,94 @@
+[
+  {
+    "gauge": "TODA1",
+    "name": "Black Warrior River at Oliver Lock and Dam (tailwater)",
+    "as_of_utc": "2026-11-22T18:00:00Z",
+    "flags": [],
+    "flood_stages_ft": {
+      "action": 122,
+      "minor": 129,
+      "moderate": 138,
+      "major": 146
+    },
+    "latest_obs": {
+      "stage_ft": 95.47,
+      "valid_utc": "2026-11-22T17:30:00Z",
+      "age_hours": 0.5,
+      "record": "TODA1-obs-stage-20261122T1730Z"
+    },
+    "change_6h": {
+      "ft": 0.01,
+      "records": [
+        "TODA1-obs-stage-20261122T1130Z",
+        "TODA1-obs-stage-20261122T1730Z"
+      ]
+    },
+    "change_24h": {
+      "ft": -0.16,
+      "records": [
+        "TODA1-obs-stage-20261121T1730Z",
+        "TODA1-obs-stage-20261122T1730Z"
+      ]
+    },
+    "trend": "steady",
+    "obs_missing_last_24h": 0,
+    "category_now": "below_action",
+    "next_stage": {
+      "name": "action",
+      "ft_away": 26.53
+    },
+    "forecast": {
+      "issued_utc": "2026-11-22T14:29:00Z",
+      "age_hours": 3.5,
+      "horizon_end_utc": "2026-11-27T12:00:00Z",
+      "peak_stage_ft": 95.2,
+      "peak_valid_utc": "2026-11-22T18:00:00Z",
+      "peak_category": "below_action",
+      "peak_record": "TODA1-fcst-stage-20261122T1800Z-iss20261122T1429Z"
+    },
+    "pair_check": {
+      "pair_gauge": "USGS-02465005",
+      "diff_ft": 0.0,
+      "latest_time_gap_hours": 0.0,
+      "records": [
+        "TODA1-obs-stage-20261122T1730Z",
+        "USGS-02465005-obs-stage-20261122T1730Z"
+      ]
+    }
+  },
+  {
+    "gauge": "USGS-02465000",
+    "name": "Black Warrior River at Northport (Oliver pool, above the dam)",
+    "as_of_utc": "2026-11-22T18:00:00Z",
+    "flags": [
+      "no_forecast_for_gauge"
+    ],
+    "flood_stages_ft": null,
+    "latest_obs": {
+      "stage_ft": 123.5,
+      "valid_utc": "2026-11-22T17:30:00Z",
+      "age_hours": 0.5,
+      "record": "USGS-02465000-obs-stage-20261122T1730Z"
+    },
+    "change_6h": {
+      "ft": 0.35,
+      "records": [
+        "USGS-02465000-obs-stage-20261122T1130Z",
+        "USGS-02465000-obs-stage-20261122T1730Z"
+      ]
+    },
+    "change_24h": {
+      "ft": -0.04,
+      "records": [
+        "USGS-02465000-obs-stage-20261121T1730Z",
+        "USGS-02465000-obs-stage-20261122T1730Z"
+      ]
+    },
+    "trend": "rising",
+    "obs_missing_last_24h": 0,
+    "category_now": null,
+    "next_stage": null,
+    "forecast": null,
+    "pair_check": null
+  }
+]

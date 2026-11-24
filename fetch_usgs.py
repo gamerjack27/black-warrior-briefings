@@ -1,88 +1,163 @@
 """
-Pulls USGS continuous (15-min) readings for our sites and saves the raw
-responses, same idea as archiver.py. Unlike NWS, USGS keeps history, so this
-doesn't need to run on a schedule. Run it when we need data.
+Turns everything in data/raw/ (NWS stageflow snapshots + USGS pages) into one
+clean table: data/clean/records.csv, one row per value.
 
-    python fetch_usgs.py                       # last 30 days
-    python fetch_usgs.py --days 7
-    python fetch_usgs.py --start 2018-12-20 --end 2019-01-05   # past flood
+Rules (see the record table in our notes):
+  - observed and forecast rows are never mixed, `kind` says which
+  - flow is always cfs (NWS sends kcfs), stage is always ft
+  - placeholder values like -9999 become empty, never a number
+  - all times are UTC "YYYY-MM-DDTHH:MM:SSZ"
+  - observations show up in every NWS snapshot, so they're kept once
+    (first time we saw them). forecasts are kept per issuance.
 """
 
-import argparse
+import csv
 import gzip
 import json
 from datetime import datetime, timezone
 from pathlib import Path
 
-import requests
+RAW = Path("data/raw")
+OUT = Path("data/clean/records.csv")
 
-SITES = [
-    "USGS-02465000",  # Black Warrior at Northport
-    "USGS-02465005",  # below Oliver L&D (same gauge NWS uses for TODA1 obs)
-]
-PARAMS = {"00065": "stage", "00060": "flow"}
+FIELDS = ["record_id", "gauge_id", "source", "kind", "parameter", "value", "unit",
+          "valid_time_utc", "issued_time_utc", "retrieved_time_utc", "status", "raw_file"]
 
-BASE = "https://api.waterdata.usgs.gov/ogcapi/v0/collections/continuous/items"
-OUT_DIR = Path("data/raw/USGS")
-HEADERS = {"User-Agent": "black-warrior-briefings (UA CS451 class project)"}
+USGS_PARAMS = {"00065": "stage", "00060": "flow"}
 
 
-def fetch_all_pages(site, pcode, time_arg):
-    params = {
-        "f": "json",
-        "monitoring_location_id": site,
-        "parameter_code": pcode,
-        "time": time_arg,
-        "skipGeometry": "true",
-        "limit": 10000,
+def utc(ts):
+    """Any ISO timestamp -> UTC string ending in Z. Empty/None stays empty."""
+    if not ts:
+        return ""
+    dt = datetime.fromisoformat(ts.replace("Z", "+00:00"))
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)  # assume UTC if they didn't say
+    return dt.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def compact(ts):
+    # 2026-11-22T00:00:00Z -> 20261122T0000Z, for ids
+    return ts.replace("-", "").replace(":", "")[:13] + "Z" if ts else "none"
+
+
+def clean_value(v, unit):
+    """Returns (value, unit) with placeholders dropped and flow in cfs."""
+    u = (unit or "").strip()
+    scale = 1
+    if u == "kcfs":
+        u, scale = "cfs", 1000
+    elif u == "ft^3/s":
+        u = "cfs"
+    # unit gets fixed first so even empty rows end up with cfs, not kcfs
+
+    try:
+        v = float(v)
+    except (TypeError, ValueError):
+        return None, u
+    if v <= -999:  # NWS uses -9999 and -999 for "no data"
+        return None, u
+    return round(v * scale, 3), u
+
+
+def make_row(gauge, source, kind, param, value, unit, valid, issued, retrieved, status, raw):
+    rid = f"{gauge}-{'fcst' if kind == 'forecast' else 'obs'}-{param}-{compact(valid)}"
+    if kind == "forecast":
+        rid += f"-iss{compact(issued)}"
+    return {
+        "record_id": rid, "gauge_id": gauge, "source": source, "kind": kind,
+        "parameter": param, "value": "" if value is None else value, "unit": unit,
+        "valid_time_utc": valid, "issued_time_utc": issued,
+        "retrieved_time_utc": retrieved, "status": status, "raw_file": raw,
     }
-    pages = []
-    url = BASE
-    while url:
-        r = requests.get(url, params=params, headers=HEADERS, timeout=60)
-        r.raise_for_status()
-        pages.append(r.text)
-        # the "next" link already has every query param baked in
-        nxt = [l["href"] for l in r.json().get("links", []) if l.get("rel") == "next"]
-        url, params = (nxt[0], None) if nxt else (None, None)
-    return pages
+
+
+def load_fetch_times():
+    """archiver.py logs when each NWS file was fetched, look those up by path."""
+    log = RAW / "fetch_log.csv"
+    if not log.exists():
+        return {}
+    with open(log, newline="") as f:
+        return {r["file"]: r["fetched_at_utc"] for r in csv.DictReader(f)}
+
+
+def nws_rows(path, retrieved):
+    gauge = path.parent.name
+    raw = path.as_posix()
+    with gzip.open(path, "rt", encoding="utf-8") as f:
+        d = json.load(f)
+
+    for kind in ("observed", "forecast"):
+        block = d.get(kind) or {}
+        if kind == "forecast" and str(block.get("issuedTime", "")).startswith("0001-"):
+            continue  # no-forecast placeholder, same as in archiver.py
+        for pt in block.get("data", []):
+            valid = utc(pt["validTime"])
+            # obs: each point has its own publish time. forecast: the whole
+            # forecast shares one issuedTime
+            issued = utc(pt.get("generatedTime")) if kind == "observed" else utc(block.get("issuedTime"))
+            for param, key, unit_key in (("stage", "primary", "primaryUnits"),
+                                         ("flow", "secondary", "secondaryUnits")):
+                val, unit = clean_value(pt.get(key), block.get(unit_key))
+                yield make_row(gauge, "NWS", kind, param, val, unit, valid, issued,
+                               retrieved, "", raw)
+
+
+def usgs_rows(path):
+    site = path.parent.name
+    raw = path.as_posix()
+    # filename is {pcode}_{fetched}_p{n}.json.gz, fetched time is in there
+    fetched = path.name.split("_")[1].replace("Z", "")
+    day, clock = fetched.split("T")
+    retrieved = f"{day}T{clock.replace('-', ':')}Z"
+
+    with gzip.open(path, "rt", encoding="utf-8") as f:
+        d = json.load(f)
+    for feat in d.get("features", []):
+        p = feat.get("properties", {})
+        param = USGS_PARAMS.get(p.get("parameter_code"))
+        if not param:
+            continue
+        val, unit = clean_value(p.get("value"), p.get("unit_of_measure"))
+        yield make_row(site, "USGS", "observed", param, val, unit, utc(p.get("time")),
+                       utc(p.get("last_modified")), retrieved,
+                       p.get("approval_status") or "", raw)
 
 
 def main():
-    ap = argparse.ArgumentParser()
-    ap.add_argument("--days", type=int, default=30)
-    ap.add_argument("--start", help="YYYY-MM-DD")
-    ap.add_argument("--end", help="YYYY-MM-DD")
-    args = ap.parse_args()
+    fetch_times = load_fetch_times()
+    rows = {}
+    revised = 0
 
-    if args.start and args.end:
-        time_arg = f"{args.start}T00:00:00Z/{args.end}T23:59:59Z"
-    else:
-        time_arg = f"P{args.days}D"  # ISO duration, means "the last N days"
+    # sorted so older files are read first -> "first time we saw it" wins
+    nws_files = sorted(p for p in RAW.glob("*/*.json.gz") if p.parent.name != "USGS")
+    usgs_files = sorted(RAW.glob("USGS/*/*.json.gz"))
 
-    fetched = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H-%M-%SZ")
+    for path in nws_files:
+        for r in nws_rows(path, fetch_times.get(path.as_posix(), "")):
+            old = rows.get(r["record_id"])
+            if old is None:
+                rows[r["record_id"]] = r
+            elif old["value"] != r["value"]:
+                revised += 1  # agency changed a value after the fact, keep the first one
 
-    for site in SITES:
-        for pcode, name in PARAMS.items():
-            try:
-                pages = fetch_all_pages(site, pcode, time_arg)
-            except (requests.RequestException, ValueError) as e:
-                print(f"[{site} {name}] failed: {e}")
-                continue
+    for path in usgs_files:
+        for r in usgs_rows(path):
+            rows.setdefault(r["record_id"], r)
 
-            n = sum(len(json.loads(p).get("features", [])) for p in pages)
-            if n == 0:
-                # some sites just don't measure flow, that's fine
-                print(f"[{site} {name}] no data")
-                continue
+    OUT.parent.mkdir(parents=True, exist_ok=True)
+    out_rows = sorted(rows.values(), key=lambda r: (r["gauge_id"], r["kind"], r["parameter"],
+                                                    r["valid_time_utc"], r["issued_time_utc"]))
+    with open(OUT, "w", newline="") as f:
+        w = csv.DictWriter(f, fieldnames=FIELDS)
+        w.writeheader()
+        w.writerows(out_rows)
 
-            out = OUT_DIR / site
-            out.mkdir(parents=True, exist_ok=True)
-            for i, text in enumerate(pages):
-                path = out / f"{pcode}_{fetched}_p{i}.json.gz"
-                with gzip.open(path, "wt", encoding="utf-8") as f:
-                    f.write(text)
-            print(f"[{site} {name}] saved {n} readings in {len(pages)} page(s)")
+    blanks = sum(1 for r in out_rows if r["value"] == "")
+    print(f"read {len(nws_files)} NWS files, {len(usgs_files)} USGS files")
+    print(f"wrote {len(out_rows)} records to {OUT} ({blanks} with no value)")
+    if revised:
+        print(f"note: {revised} observations were revised in later snapshots (kept first version)")
 
 
 if __name__ == "__main__":
